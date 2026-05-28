@@ -1,119 +1,149 @@
 # ThreatWatch
-
-A CVE intelligence tool built around one observation: **CVSS 10.0 doesn't mean anyone is trying.**
+> CVE threat intelligence — because CVSS 10.0 doesn't mean anyone is trying.
 
 ---
 
-## The problem with sorting by severity
+## Table of Contents
 
-The 10 highest-scoring CVEs this month all carry CVSS 10.0. Their average EPSS is 0.08%.
+1. [Motivation](#motivation)
+2. [Architecture](#architecture)
+3. [Data Pipeline](#data-pipeline)
+4. [Design Decisions](#design-decisions)
+   - [Vendor Extraction](#vendor-extraction)
+   - [CVSS vs EPSS](#cvss-vs-epss)
+   - [Vendor Exploitability Coefficient](#vendor-exploitability-coefficient)
+   - [Pre-Emerging Threats](#pre-emerging-threats)
+5. [Usage](#usage)
+6. [Sample Output](#sample-output)
+7. [Limitations & Future Work](#limitations--future-work)
+8. [Stack](#stack)
 
-litellm has CVSS 9.8 and EPSS 54.3%.
+---
 
-That inversion is the whole point. CVSS measures a theoretical ceiling — the worst-case impact if conditions are perfect and an attacker knows exactly what they're doing. EPSS measures what's actually happening: the probability that a CVE gets exploited in the wild within the next 30 days, based on real telemetry.
+## Motivation
 
-A vulnerability can be catastrophic in theory and ignored in practice. It can also be moderately severe on paper and actively weaponized right now. Sorting by CVSS alone buries the second category under the first.
+Standard vulnerability tooling sorts by CVSS. CVSS is a severity ceiling — it answers "how bad could this get if perfectly exploited." It does not answer "is anyone trying."
 
-ThreatWatch combines both signals.
+This month's data makes the problem concrete. The 10 highest-scoring CVEs all carry CVSS 10.0. Their average EPSS is **0.08%**. litellm — an AI/LLM orchestration library sitting between applications and language model APIs — carries CVSS 9.8 and EPSS **54.3%**.
+
+Sorting by CVSS buries litellm under a list of theoretically catastrophic but practically ignored vulnerabilities. ThreatWatch is built to surface the second category.
 
 ---
 
 ## Architecture
 
 ```mermaid
-flowchart LR
+flowchart TD
     NVD[NVD API] --> F[fetcher.py]
     EPSS[EPSS API] --> F
-    F --> P[parser.py]
-    P --> A[analyzer.py]
-    A --> M[main.py]
+    F -->|raw CVE list| P[parser.py]
+    P -->|structured CVEs| A[analyzer.py]
 
-    A --> C[vendor coefficient]
-    A --> E[pre-emerging threats]
-    A --> W[watched alerts]
-    A --> T[trend delta]
+    A -->|severity counts| M[main.py]
+    A -->|top vendors + trends| M
+    A -->|exploitability coefficient| M
+    A -->|watched alerts| M
+    A -->|pre-emerging threats| M
+    A -->|easily exploitable| M
+    A -->|top 10 scoring| M
 
-    M --> Out[terminal output]
+    M --> T[terminal output]
 ```
 
-**fetcher.py** — handles NVD pagination, rate limiting, and EPSS batch fetching. NVD returns max 2000 results per request and enforces 5 req/30s without an API key — requests are spaced accordingly with exponential backoff and `Retry-After` header support. EPSS is fetched in batches of 100 CVE IDs per request.
-
-**parser.py** — extracts structured data from raw NVD JSON. The interesting part is vendor extraction.
-
-**analyzer.py** — all signal generation lives here. No output logic, no API calls.
-
-**main.py** — orchestration and terminal rendering via `rich` for colored output and tables. No external logging frameworks.
+Each module has one responsibility. `fetcher.py` handles all network I/O. `parser.py` extracts structured data from raw NVD JSON. `analyzer.py` generates all signals — no output logic, no API calls. `main.py` orchestrates and renders.
 
 ---
 
-## On vendor extraction
+## Data Pipeline
 
-The brief says "primary affected vendor" and leaves the rest open. NVD doesn't have a vendor field — it has CPE (Common Platform Enumeration) strings buried inside `configurations.nodes.cpeMatch`. Format: `cpe:2.3:type:vendor:product:version:...`
+**Fetching**
 
-The extraction hierarchy:
+NVD CVE API v2.0 is queried twice per run — once for the current period, once for the previous equivalent window (used for trend computation). Severity filter is applied at the API level (`cvssV3Severity=HIGH` and `cvssV3Severity=CRITICAL` in separate requests, since NVD doesn't accept range queries).
 
-1. **CPE data** — most reliable. Parse the criteria string, take index 3 (vendor). When CPE is present, this is unambiguous.
-2. **Description text** — pattern match on `"vulnerability in [X]"` and `"[X] is vulnerable"`. Noisy but useful when CPE is missing.
-3. **`unknown`** — when neither works.
+NVD returns max 2000 results per page. Pagination is handled automatically via `startIndex` until `startIndex >= totalResults`. Without an API key, the rate limit is 5 requests per 30 seconds — requests are spaced with a fixed 6-second sleep between pages, with exponential backoff on 403/429 responses reading `Retry-After` headers where present.
 
-The noise problem: CVEs in `Awaiting Analysis` status haven't been processed by NVD analysts yet — no CPE, sometimes vague descriptions. These are often the most recent and highest-EPSS entries. The tool marks them `unknown` and excludes them from vendor rankings, which means the rankings slightly underrepresent brand-new threats. A more complete fallback would use the `sourceIdentifier` field — the CNA that published the CVE — but that requires mapping CNA identifiers to vendor names, which is doable but outside the 2h scope.
+EPSS scores are fetched in batches of 100 CVE IDs per request from the FIRST.org API, after all NVD data is collected.
 
-A disputed severity flag is also computed: when the NVD primary CVSS score and the CNA secondary score differ by more than 2.0 points, something is worth a second look. Vendors have incentive to score their own vulnerabilities lower.
+**Parsing**
 
----
+For each CVE, the parser extracts:
 
-## Vendor Exploitability Coefficient
-
-Top 5 vendors by CVE count this month: Microsoft (109), WordPress (104), OpenClaw (58), Linux (54), Adobe (30).
-
-By that ranking, Microsoft looks like the biggest problem.
-
-The coefficient is `CVE count × average EPSS`. Microsoft: 109 × 0.1% = 15.0. litellm: 5 × 10.9% = 54.5.
-
-litellm is an AI/LLM orchestration library — it sits between applications and language model APIs, handling authentication, routing, and token management. A critical vulnerability in that layer has a very different blast radius than a Windows driver bug that requires local access to exploit.
-
-The coefficient doesn't capture everything. A single CVSS 10.0 / EPSS 80% CVE from a vendor with no other entries would rank low by volume but should dominate attention. The pre-emerging section handles that case.
-
----
-
-## Pre-emerging threats
-
-High EPSS from non-mainstream vendors. These don't make the top-5 list because CVE count is low — but exploitation probability is high.
-
-CVE description is scanned for SaaS/cloud attack surface signals: OAuth and token references, API and webhook patterns, AI/LLM infrastructure keywords, supply chain indicators, cloud storage misconfigurations, identity and SSO components. When a match is found, the tag surfaces in output. When it doesn't, a truncated description is shown instead — because no tag is also information.
-
-The EPSS threshold is 15%. Below that, the signal-to-noise ratio drops. Above it, something is moving.
+| Field | Source |
+|---|---|
+| CVE ID | `cve.id` |
+| Published date | `cve.published[:10]` |
+| CVSS score | `cvssMetricV31[type=Primary].baseScore` |
+| Severity | `cvssMetricV31[type=Primary].baseSeverity` |
+| Vector string | `cvssMetricV31[type=Primary].vectorString` |
+| Description | `descriptions[lang=en].value` |
+| Vendor | See vendor extraction |
+| CWE group | `weaknesses[].description[].value` → mapped category |
+| EPSS | Cross-referenced from FIRST.org batch response |
+| Easily exploitable | `AV:N` and `AC:L` and `PR:N` in vector string |
+| Disputed severity | Primary vs Secondary score delta > 2.0 |
 
 ---
 
-## What I'd improve
+## Design Decisions
 
-**Vendor extraction** is the weakest part. CPE parsing takes the first match — in multi-vendor CVEs (supply chain, shared libraries), that's often wrong. A better approach would filter for `vulnerable: true` entries and handle cases where the same CVE affects a library and everything downstream of it differently.
+### Vendor Extraction
 
-**Trend analysis** uses two consecutive 30-day windows. This is sensitive to random clustering — a vendor that ships patches in batches can look like it's spiking. A 90-day rolling baseline would be more stable.
+The brief asks for "primary affected vendor" without specifying how to derive it. NVD has no vendor field — vendor data lives in CPE strings inside `configurations.nodes.cpeMatch`.
 
-**CISA KEV** would add a third exploitation signal: confirmed active exploitation, not just probability. The combination of EPSS > 20% and KEV presence would be a near-certain action trigger.
+CPE format: `cpe:2.3:type:vendor:product:version:...`
 
-**EPSS latency** — EPSS scores update daily but lag real-world exploitation by design. A CVE can be actively exploited for 48 hours before EPSS catches up. The pre-emerging section partially compensates by using a low threshold, but it's not a substitute for real-time threat feeds.
+Extraction hierarchy:
+
+1. **CPE** — parse `criteria` string, take index `[3]`. When CPE is present and the CVE status is `Analyzed`, this is reliable.
+2. **Description pattern matching** — regex on `"vulnerability in [X]"` and `"[X] is vulnerable"`. Noisy but recovers some CVEs without CPE.
+3. **`unknown`** — fallback when neither source yields a result.
+
+The structural problem: CVEs in `Awaiting Analysis` status have no CPE data. These are often the most recent and highest-EPSS entries — NVD analysts can take days to process them. The tool excludes `unknown` from vendor rankings, which means the rankings slightly undercount brand-new threats.
+
+A more complete fallback would use `sourceIdentifier` — the CNA that reported the CVE — but mapping CNA identifiers to vendor names requires a lookup table that's outside the scope of this implementation.
+
+Vendors have incentive to score their own vulnerabilities conservatively. When a CNA's secondary CVSS score differs from NVD's primary by more than 2.0 points, the CVE is flagged as disputed — a signal that warrants independent review.
+
+### CVSS vs EPSS
+
+CVSS is static and context-free. It doesn't change based on whether exploit code exists, whether the vulnerable software is widely deployed, or whether attackers are actively targeting it.
+
+EPSS (Exploit Prediction Scoring System) is a daily-updated probabilistic model trained on real exploitation telemetry. It answers a different question: given everything observable right now, what's the probability this CVE gets exploited in the next 30 days.
+
+Neither signal alone is sufficient. A CVSS 10.0 / EPSS 0.0% CVE may never be exploited. A CVSS 7.5 / EPSS 40% CVE is actively being weaponized. ThreatWatch uses both.
+
+### Vendor Exploitability Coefficient
+
+Simple metric: `CVE count × average EPSS` per vendor.
+
+This month: Microsoft has 109 CVEs, average EPSS 0.1%, coefficient 15.0. litellm has 5 CVEs, average EPSS 10.9%, coefficient 54.5.
+
+The coefficient surfaces vendors where exploitation probability is concentrated, not just where CVE volume is high. It doesn't handle the edge case of a single high-EPSS critical CVE from a low-volume vendor well — that case is handled separately in pre-emerging threats.
+
+### Pre-Emerging Threats
+
+CVEs with EPSS > 15% from vendors outside the mainstream (Microsoft, Google, Adobe, Cisco, Apple, Linux, Oracle excluded). These don't appear in top-5 by volume but carry disproportionate real-world risk.
+
+Each CVE description is scanned for SaaS/cloud attack surface signals using keyword matching against defined categories: OAuth/token abuse, API exposure, AI/LLM infrastructure, supply chain, cloud storage, identity/SSO. When a match is found, the category surfaces in output. When no match is found, a truncated description is shown — the absence of a tag is also information.
+
+Threshold rationale: below 15% EPSS, the signal-to-noise ratio degrades. Above it, something is moving.
 
 ---
 
 ## Usage
 
 ```bash
-python main.py                   # last 30 days
+python main.py                   # last 30 days, all vendors
 python main.py --days 60         # custom period
 python main.py --vendor okta     # filter by vendor
 ```
 
-## Output
+---
+
+## Sample Output
 
 ```
-╔╦╗╦ ╦╦═╗╔═╗╔═╗╔╦╗╦ ╦╔═╗╔╦╗╔═╗╦ ╦
- ║ ╠═╣╠╦╝║╣ ╠═╣ ║ ║║║╠═╣ ║ ║  ╠═╣
- ╩ ╩ ╩╩╚═╚═╝╩ ╩ ╩ ╚╩╝╩ ╩ ╩ ╚═╝╩ ╩
-  CVE Threat Intelligence Monitor
-
+THREATWATCH — CVE Threat Monitor
 Period : 2026-04-28 → 2026-05-28
 Total  : 1402 CVEs (CVSS ≥ 7.0)
 
@@ -145,32 +175,48 @@ Total  : 1402 CVEs (CVSS ≥ 7.0)
 ── PRE-EMERGING THREATS ────────────────────
   high EPSS, non-mainstream vendors — weaponization likely soon
 
-  CVE-2026-42208         litellm        CVSS 9.8  EPSS 54.3%  [API attack surface]
-  CVE-2026-48027         nx             CVSS 9.8  EPSS 26.8%  [Supply chain risk]
+  CVE-2026-42208   litellm   CVSS 9.8  EPSS 54.3%  [API attack surface]
+  CVE-2026-48027   nx        CVSS 9.8  EPSS 26.8%  [Supply chain risk]
 
 ── EASILY EXPLOITABLE (AV:N/AC:L/PR:N) ────
-  CVE-2026-42208         litellm        CVSS 9.8  EPSS 54.3%  HIGH PROB
-  CVE-2026-8679          wordpress      CVSS 7.5  EPSS 27.7%
-  CVE-2026-48027         nx             CVSS 9.8  EPSS 26.8%
+  CVE-2026-42208   litellm        CVSS 9.8  EPSS 54.3%  HIGH PROB
+  CVE-2026-8679    wordpress      CVSS 7.5  EPSS 27.7%
+  CVE-2026-48027   nx             CVSS 9.8  EPSS 26.8%
 
 ── TOP 10 HIGHEST SCORING ──────────────────
-  CVE ID                 Vendor           CVSS   EPSS     Severity   Attack
-  ────────────────────── ──────────────── ────── ──────── ────────── ────────────
-
-  CVE-2026-35051         traefik          10.0   0.0%     CRITICAL   other
-  CVE-2026-39858         traefik          10.0   0.1%     CRITICAL   auth_bypass
-  CVE-2026-26332         vm2_project      10.0   0.1%     CRITICAL   injection
-  CVE-2026-33587         lfnovo           10.0   0.1%     CRITICAL   other
-  CVE-2026-35435         microsoft        10.0   0.1%     CRITICAL   auth_bypass
-  CVE-2026-44643         peerigon         10.0   0.1%     CRITICAL   rce
-  CVE-2026-41553         dhtmlx           10.0   0.3%     CRITICAL   injection
-  CVE-2026-42960         nlnetlabs        10.0   0.0%     CRITICAL   other
-  CVE-2026-42901         microsoft        10.0   0.0%     CRITICAL   auth_bypass
-  CVE-2026-30893         wazuh            9.9    0.1%     CRITICAL   access_control
+  CVE ID                 Vendor         CVSS   EPSS    Severity   Attack
+  ─────────────────────────────────────────────────────────────────────────
+  CVE-2026-35051         traefik        10.0   0.0%    CRITICAL   other
+  CVE-2026-39858         traefik        10.0   0.1%    CRITICAL   auth_bypass
+  CVE-2026-26332         vm2_project    10.0   0.1%    CRITICAL   injection
+  CVE-2026-33587         lfnovo         10.0   0.1%    CRITICAL   other
+  CVE-2026-35435         microsoft      10.0   0.1%    CRITICAL   auth_bypass
+  CVE-2026-44643         peerigon       10.0   0.1%    CRITICAL   rce
+  CVE-2026-41553         dhtmlx         10.0   0.3%    CRITICAL   injection
+  CVE-2026-42960         nlnetlabs      10.0   0.0%    CRITICAL   other
+  CVE-2026-42901         microsoft      10.0   0.0%    CRITICAL   auth_bypass
+  CVE-2026-30893         wazuh          9.9    0.1%    CRITICAL   access_control
 ```
+
+---
+
+## Limitations & Future Work
+
+**Vendor extraction accuracy** — CPE parsing takes the first `cpeMatch` entry. In supply chain CVEs where a vulnerability propagates through a library to downstream consumers, the first match is often the library, not the affected product. Filtering for `vulnerable: true` entries and deduplicating by vendor would improve accuracy.
+
+**Trend window sensitivity** — month-over-month comparison is sensitive to patch release cycles. Vendors that batch their security updates show artificial spikes. A 90-day rolling baseline would produce more stable trend signals.
+
+**CISA KEV integration** — EPSS measures probability; KEV confirms reality. Cross-referencing would add a third exploitation signal and allow a stronger action trigger: EPSS > 20% AND KEV presence.
+
+**EPSS latency** — EPSS updates daily but lags real-world exploitation by design. A CVE can be actively exploited for 48 hours before the model updates. The 15% pre-emerging threshold partially compensates but is not a substitute for real-time threat feeds.
+
+**No persistence** — each run is stateless. Storing results in SQLite would enable genuine historical trending, anomaly detection across weeks, and diff-based alerting on new CVEs per vendor.
 
 ---
 
 ## Stack
 
-Python · httpx · rich · [NVD CVE API v2.0](https://nvd.nist.gov/developers/vulnerabilities) · [EPSS API](https://www.first.org/epss/api)
+- [NVD CVE API v2.0](https://nvd.nist.gov/developers/vulnerabilities)
+- [EPSS API — FIRST.org](https://www.first.org/epss/api)
+- [httpx](https://www.python-httpx.org/) — HTTP client
+- [rich](https://github.com/Textualize/rich) — terminal outputSonnet 4.6 LowClaude is AI and can make mistakes. Please double-check responses.

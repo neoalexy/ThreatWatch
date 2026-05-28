@@ -13,10 +13,11 @@
    - [CVSS vs EPSS](#cvss-vs-epss)
    - [Vendor Exploitability Coefficient](#vendor-exploitability-coefficient)
    - [Pre-Emerging Threats](#pre-emerging-threats)
-5. [Usage](#usage)
-6. [Sample Output](#sample-output)
-7. [Limitations & Future Work](#limitations--future-work)
-8. [Stack](#stack)
+5. [Installation](#installation)
+6. [Usage](#usage)
+7. [Sample Output](#sample-output)
+8. [Limitations & Future Work](#limitations--future-work)
+9. [Stack](#stack)
 
 ---
 
@@ -98,11 +99,11 @@ Extraction hierarchy:
 2. **Description pattern matching** — regex on `"vulnerability in [X]"` and `"[X] is vulnerable"`. Noisy but recovers some CVEs without CPE.
 3. **`unknown`** — fallback when neither source yields a result.
 
-The structural problem: CVEs in `Awaiting Analysis` status have no CPE data. These are often the most recent and highest-EPSS entries — NVD analysts can take days to process them. The tool excludes `unknown` from vendor rankings, which means the rankings slightly undercount brand-new threats.
+The structural problem: CVEs in `Awaiting Analysis` status have no CPE data. These are often the most recent and highest-EPSS entries — NVD analysts can take days to process them. The tool marks them `unknown` and excludes them from vendor rankings, which means the rankings slightly undercount brand-new threats. A more complete fallback would use the `sourceIdentifier` field — the CNA that published the CVE — but that requires mapping CNA identifiers to vendor names, which is doable but outside the 2h scope.
 
-A more complete fallback would use `sourceIdentifier` — the CNA that reported the CVE — but mapping CNA identifiers to vendor names requires a lookup table that's outside the scope of this implementation.
+A disputed severity flag is also computed: when the NVD primary CVSS score and the CNA secondary score differ by more than 2.0 points, something is worth a second look. Vendors have incentive to score their own vulnerabilities lower.
 
-Vendors have incentive to score their own vulnerabilities conservatively. When a CNA's secondary CVSS score differs from NVD's primary by more than 2.0 points, the CVE is flagged as disputed — a signal that warrants independent review.
+Watched vendors (google, microsoft, github, okta, slack, salesforce) are defined in `config.py`. In production this would be user-configurable — loaded from a file or environment variable based on the organization's actual SaaS stack.
 
 ### CVSS vs EPSS
 
@@ -124,9 +125,19 @@ The coefficient surfaces vendors where exploitation probability is concentrated,
 
 CVEs with EPSS > 15% from vendors outside the mainstream (Microsoft, Google, Adobe, Cisco, Apple, Linux, Oracle excluded). These don't appear in top-5 by volume but carry disproportionate real-world risk.
 
-Each CVE description is scanned for SaaS/cloud attack surface signals using keyword matching against defined categories: OAuth/token abuse, API exposure, AI/LLM infrastructure, supply chain, cloud storage, identity/SSO. When a match is found, the category surfaces in output. When no match is found, a truncated description is shown — the absence of a tag is also information.
+Each CVE description is scanned for SaaS/cloud attack surface signals using keyword matching against defined categories: OAuth/token abuse, API exposure, AI/LLM infrastructure, supply chain, cloud storage, identity/SSO. When a match is found, the category surfaces in output. When no match is found, a truncated description is shown instead — the absence of a tag is also information.
 
 Threshold rationale: below 15% EPSS, the signal-to-noise ratio degrades. Above it, something is moving.
+
+---
+
+## Installation
+
+```bash
+pip install httpx rich
+```
+
+No API key required. Without one, the script respects NVD's rate limit of 5 requests per 30 seconds automatically. A free key can be requested at [nvd.nist.gov](https://nvd.nist.gov/developers/request-an-api-key) and bumps the limit to 50 requests per 30 seconds.
 
 ---
 
@@ -219,4 +230,4 @@ Total  : 1402 CVEs (CVSS ≥ 7.0)
 - [NVD CVE API v2.0](https://nvd.nist.gov/developers/vulnerabilities)
 - [EPSS API — FIRST.org](https://www.first.org/epss/api)
 - [httpx](https://www.python-httpx.org/) — HTTP client
-- [rich](https://github.com/Textualize/rich) — terminal outputSonnet 4.6 LowClaude is AI and can make mistakes. Please double-check responses.
+- [rich](https://github.com/Textualize/rich) — terminal output and tables

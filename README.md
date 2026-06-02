@@ -19,9 +19,9 @@ CVE threat intelligence-high CVSS doesn't mean anyone is trying.
 
 ## Motivation
 
-The task was to fetch CVEs, extract some fields, and produce a useful summary. That part is straightforward. What's less straightforward is figuring out what "useful" actually means.
+Fetching CVEs and extracting fields is the easy part. Figuring out what a useful summary actually looks like is where it gets interesting.
 
-The obvious approach is to sort by CVSS. But CVSS measures theoretical impact -how bad things could get under perfect conditions. It doesn't tell you whether anyone is trying.
+The obvious approach is to sort by CVSS. But CVSS measures theoretical impact-how bad things could get under perfect conditions. It doesn't tell you whether anyone is trying.
 
 This month's data makes the problem concrete. The 10 highest-scoring CVEs all have CVSS 10.0. Their average EPSS is 0.08%. litellm, an AI/LLM orchestration library that sits between applications and language model APIs, has CVSS 9.8 and EPSS 54.3%. It doesn't appear in the top 10 by score. It's the most actionable finding in the dataset.
 
@@ -57,9 +57,9 @@ Each module has one job. `fetcher.py` handles all network I/O. `parserr.py` extr
 
 **Fetching**
 
-NVD CVE API v2.0 is queried twice per run - current period and previous equivalent window for trend comparison. HIGH and CRITICAL are fetched in separate requests because NVD doesn't accept score range queries, only exact severity labels.
+NVD CVE API v2.0 is queried twice per run -current period and previous equivalent window for trend comparison. HIGH and CRITICAL are fetched in separate requests because NVD doesn't accept score range queries, only exact severity labels.
 
-Pagination is handled automatically via `startIndex`. Without an API key the rate limit is 5 requests per 30 seconds so requests are spaced with 6-second sleeps and exponential backoff on 403/429 responses with `Retry-After` header support.
+Pagination is handled automatically via `startIndex`. Without an API key the rate limit is 5 requests per 30 seconds, so requests are spaced with 6-second sleeps and exponential backoff on 403/429 responses with `Retry-After` header support.
 
 EPSS scores are fetched in batches of 100 CVE IDs per request after all NVD data is collected.
 
@@ -87,7 +87,7 @@ For each CVE:
 
 **Primary affected vendor**
 
-The brief left this open. NVD has no vendor field-vendor lives inside CPE strings in `configurations.nodes.cpeMatch`, format `cpe:2.3:type:vendor:product:version`.
+The brief left this open. NVD has no vendor field - vendor lives inside CPE strings in `configurations.nodes.cpeMatch`, format `cpe:2.3:type:vendor:product:version`.
 
 Extraction hierarchy:
 1. CPE data - reliable when status is `Analyzed`
@@ -96,8 +96,6 @@ Extraction hierarchy:
 4. `unknown` - when nothing works
 
 CVEs in `Awaiting Analysis` or `Deferred` status have no CPE. These are often the most recent entries and sometimes the highest-EPSS ones. They get marked `unknown` and excluded from vendor rankings, which means rankings slightly undercount brand-new threats. A more complete fallback would use `sourceIdentifier` but that requires mapping CNA identifiers to vendor names.
-
-One thing worth noting: Oracle consistently omits CWE from their CVE submissions. These appear as `no-cwe` in output - not a parsing failure, just Oracle being Oracle.
 
 Vendors also have incentive to score their own vulnerabilities lower. When CNA secondary score differs from NVD primary by more than 2.0 points, the CVE is flagged as disputed.
 
@@ -147,7 +145,7 @@ python main.py --vendor okta     # filter by vendor
 
 ## Sample Output
 
-![ThreatWatch output](threatwatch.png)
+![ThreatWatch output](screenshot.png)
 
 ---
 
@@ -159,7 +157,7 @@ python main.py --vendor okta     # filter by vendor
 
 **Time-to-exploit compression** - Mandiant M-Trends 2026 puts mean time to exploit at negative seven days, meaning exploitation often happens before a patch exists. This tool operates on published CVEs only. Integration with PoC tracking (Exploit-DB, GitHub security advisories) would close that gap.
 
-**CISA KEV integration** - EPSS measures probability, KEV confirms reality. EPSS above 20% combined with KEV presence would be a near-certain action trigger.
+**CISA KEV integration** -EPSS measures probability, KEV confirms reality. EPSS above 20% combined with KEV presence would be a near-certain action trigger.
 
 **No persistence** - each run is stateless. SQLite storage would enable real historical trending and diff-based alerting: litellm had 0 CVEs last week, 5 this week, EPSS 54% - that delta is more actionable than the absolute count.
 

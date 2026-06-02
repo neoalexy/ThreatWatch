@@ -145,7 +145,7 @@ python main.py --vendor okta     # filter by vendor
 
 ## Sample Output
 
-![ThreatWatch output](screenshot.png)
+![ThreatWatch output](threatwatch.png)
 
 ---
 

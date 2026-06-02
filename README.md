@@ -57,7 +57,7 @@ Each module has one job. `fetcher.py` handles all network I/O. `parserr.py` extr
 
 **Fetching**
 
-NVD CVE API v2.0 is queried twice per run -current period and previous equivalent window for trend comparison. HIGH and CRITICAL are fetched in separate requests because NVD doesn't accept score range queries, only exact severity labels.
+NVD CVE API v2.0 is queried twice per run-current period and previous equivalent window for trend comparison. HIGH and CRITICAL are fetched in separate requests because NVD doesn't accept score range queries, only exact severity labels.
 
 Pagination is handled automatically via `startIndex`. Without an API key the rate limit is 5 requests per 30 seconds, so requests are spaced with 6-second sleeps and exponential backoff on 403/429 responses with `Retry-After` header support.
 
@@ -87,17 +87,16 @@ For each CVE:
 
 **Primary affected vendor**
 
-The brief left this open. NVD has no vendor field - vendor lives inside CPE strings in `configurations.nodes.cpeMatch`, format `cpe:2.3:type:vendor:product:version`.
+The brief left this open. NVD has no vendor field-vendor lives inside CPE strings in `configurations.nodes.cpeMatch`, format `cpe:2.3:type:vendor:product:version`.
 
 Extraction hierarchy:
 1. CPE data - reliable when status is `Analyzed`
-2. WordPress plugin pattern - `"The X plugin for WordPress"` extracts the plugin name, not WordPress. WordPress itself only appears as vendor for core CVEs, not the plugin ecosystem
-3. Generic description pattern matching - noisy but recovers some CVEs without CPE
-4. `unknown` - when nothing works
+2. Description pattern matching -regex on common vulnerability description patterns, recovers some CVEs without CPE
+3. `unknown`-when nothing works.
 
 CVEs in `Awaiting Analysis` or `Deferred` status have no CPE. These are often the most recent entries and sometimes the highest-EPSS ones. They get marked `unknown` and excluded from vendor rankings, which means rankings slightly undercount brand-new threats. A more complete fallback would use `sourceIdentifier` but that requires mapping CNA identifiers to vendor names.
 
-Vendors also have incentive to score their own vulnerabilities lower. When CNA secondary score differs from NVD primary by more than 2.0 points, the CVE is flagged as disputed.
+Vendors have incentive to score their own vulnerabilities lower. When CNA secondary score differs from NVD primary by more than 2.0 points, the CVE is flagged as disputed.
 
 Watched vendors are defined in `config.py`. In production this would be loaded from a file or environment variable based on what SaaS tools the organization actually uses.
 
@@ -145,7 +144,7 @@ python main.py --vendor okta     # filter by vendor
 
 ## Sample Output
 
-![ThreatWatch output](threatwatch.png)
+![ThreatWatch output](screenshot.png)
 
 ---
 
@@ -157,7 +156,7 @@ python main.py --vendor okta     # filter by vendor
 
 **Time-to-exploit compression** - Mandiant M-Trends 2026 puts mean time to exploit at negative seven days, meaning exploitation often happens before a patch exists. This tool operates on published CVEs only. Integration with PoC tracking (Exploit-DB, GitHub security advisories) would close that gap.
 
-**CISA KEV integration** -EPSS measures probability, KEV confirms reality. EPSS above 20% combined with KEV presence would be a near-certain action trigger.
+**CISA KEV integration** - EPSS measures probability, KEV confirms reality. EPSS above 20% combined with KEV presence would be a near-certain action trigger.
 
 **No persistence** - each run is stateless. SQLite storage would enable real historical trending and diff-based alerting: litellm had 0 CVEs last week, 5 this week, EPSS 54% - that delta is more actionable than the absolute count.
 

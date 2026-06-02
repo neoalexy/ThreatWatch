@@ -94,7 +94,7 @@ Extraction hierarchy:
 2. Description pattern matching -regex on common vulnerability description patterns, recovers some CVEs without CPE
 3. `unknown`-when nothing works.
 
-CVEs in `Awaiting Analysis` or `Deferred` status have no CPE. These are often the most recent entries and sometimes the highest-EPSS ones. They get marked `unknown` and excluded from vendor rankings, which means rankings slightly undercount brand-new threats. A more complete fallback would use `sourceIdentifier` but that requires mapping CNA identifiers to vendor names.
+CVEs in `Awaiting Analysis` or `Deferred` status have no CPE. These are often the most recent entries and sometimes the highest-EPSS ones. They get marked unknown and excluded from vendor rankings only but they still appear in top 10 scoring and pre-emerging threats where vendor attribution isn't required.
 
 Vendors have incentive to score their own vulnerabilities lower. When CNA secondary score differs from NVD primary by more than 2.0 points, the CVE is flagged as disputed.
 

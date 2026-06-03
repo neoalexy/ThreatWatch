@@ -125,7 +125,7 @@ Each description is scanned for SaaS/cloud attack surface signals - OAuth and to
 ## Installation
 
 ```bash
-pip install httpx rich
+pip install -r requirements.txt
 ```
 
 No API key required. Without one the script respects NVD's 5 req/30s rate limit automatically. Free key available at [nvd.nist.gov](https://nvd.nist.gov/developers/request-an-api-key) for 50 req/30s.
